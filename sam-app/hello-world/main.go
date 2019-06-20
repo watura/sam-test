@@ -1,51 +1,63 @@
 package main
 
 import (
-	"errors"
-	"fmt"
-	"io/ioutil"
-	"net/http"
+	"context"
+	"encoding/json"
+	"os"
 
-	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
+	l "github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/lambda"
 )
-
-var (
-	// DefaultHTTPGetAddress Default Address
-	DefaultHTTPGetAddress = "https://checkip.amazonaws.com"
-
-	// ErrNoIP No IP found in response
-	ErrNoIP = errors.New("No IP in HTTP response")
-
-	// ErrNon200Response non 200 status code in response
-	ErrNon200Response = errors.New("Non 200 Response found")
-)
-
-func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	resp, err := http.Get(DefaultHTTPGetAddress)
-	if err != nil {
-		return events.APIGatewayProxyResponse{}, err
-	}
-
-	if resp.StatusCode != 200 {
-		return events.APIGatewayProxyResponse{}, ErrNon200Response
-	}
-
-	ip, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return events.APIGatewayProxyResponse{}, err
-	}
-
-	if len(ip) == 0 {
-		return events.APIGatewayProxyResponse{}, ErrNoIP
-	}
-
-	return events.APIGatewayProxyResponse{
-		Body:       fmt.Sprintf("Hello, %v", string(ip)),
-		StatusCode: 200,
-	}, nil
-}
 
 func main() {
-	lambda.Start(handler)
+	l.Start(handler)
+}
+
+// Response for lambda
+type Response struct {
+	Message string `json:"body"`
+}
+
+func handler(ctx context.Context) (Response, error) {
+	// Local な場合はlocal用のconfigを使う
+	var lmd *lambda.Lambda
+	if os.Getenv("AWS_SAM_LOCAL") == "true" {
+		lmd = lambda.New(session.New(localConfig()))
+	} else {
+		lmd = lambda.New(session.New())
+	}
+
+	j, err := json.Marshal(Response{"Hello World"})
+	if err != nil {
+		return Response{}, err
+	}
+
+	input := &lambda.InvokeInput{
+		FunctionName:   aws.String("HelloInvokedFunction"),
+		Payload:        j,
+		InvocationType: aws.String("RequestResponse"),
+	}
+	resp, err := lmd.Invoke(input)
+	if err != nil {
+		return Response{}, err
+	}
+	var r Response
+	err = json.Unmarshal(resp.Payload, &r)
+	if err != nil {
+		return Response{}, err
+	}
+
+	return Response{r.Message}, nil
+}
+
+func localConfig() *aws.Config {
+	c := aws.NewConfig()
+
+	c.DisableEndpointHostPrefix = aws.Bool(true)
+	c.Endpoint = aws.String("host.docker.internal:3001")
+	c.DisableSSL = aws.Bool(true)
+
+	return c
 }
